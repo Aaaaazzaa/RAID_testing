@@ -1,11 +1,17 @@
 package main
 
 import (
+	"archive/tar"
+	"io/ioutil"
+
+	//"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"io"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/rest"
+
 	//"k8s.io/apimachinery/pkg/runtime"
 	//"k8s.io/client-go/tools/clientcmd"
 	//"k8s.io/client-go/tools/remotecommand"
@@ -18,20 +24,20 @@ import (
 	"k8s.io/client-go/util/homedir"
 	//"os"
 	"path"
+	"k8s.io/client-go/kubernetes"
 	//"k8s.io/client-go/kubernetes"
 	"os"
 	"path/filepath"
 	"strings"
-	"k8s.io/client-go/kubernetes"
 	//"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/apimachinery/pkg/runtime"
 	//"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	//"k8s.io/kubernetes/pkg/kubectl/cmd/"
-	_ "github.com/kubernetes/kubectl/pkg/cmd/cp"
-	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
-	_ "unsafe"
+	//_ "k8s.io/kubernetes/pkg/kubectl/cmd/cp"
+	//cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	//_ "unsafe"
 )
 
 // ExecCmd exec command on specific pod and wait the command's output.
@@ -75,25 +81,7 @@ import (
 //}
 
 // #1 pod exec
-func execToPodThroughAPI(command []string, containerName, podName, namespace string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (error) {
-	var kubeconfig *string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-	flag.Parse()
-
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-	if err != nil {
-		panic(err)
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		err = fmt.Errorf("failed creating clientset. Error: %+v", err)
-		return err
-	}
-
+func execToPodThroughAPI(clientset *kubernetes.Clientset, restConfig *rest.Config, command []string, containerName, podName, namespace string, stdin io.Reader, stdout io.Writer, stderr io.Writer) (error) {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -114,7 +102,7 @@ func execToPodThroughAPI(command []string, containerName, podName, namespace str
 		TTY:       false,
 	}, parameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	exec, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
 	if err != nil {
 		return fmt.Errorf("error while creating Executor: %v", err)
 	}
@@ -131,11 +119,80 @@ func execToPodThroughAPI(command []string, containerName, podName, namespace str
 
 	return nil
 }
-//go:linkname cpMakeTar github.com/kubernetes/kubectl/pkg/cmd/cp.makeTar
-func cpMakeTar(srcPath, destPath string, writer io.Writer) error
 
+func cpMakeTar(srcPath, destPath string, writer io.Writer) error{
+	tarWriter := tar.NewWriter(writer)
+	defer tarWriter.Close()
+
+	srcPath = path.Clean(srcPath)
+	destPath = path.Clean(destPath)
+	return recursiveTar(path.Dir(srcPath), path.Base(srcPath), path.Dir(destPath), path.Base(destPath), tarWriter)
+}
+func recursiveTar(srcBase, srcFile, destBase, destFile string, tw *tar.Writer) error {
+	filepath := path.Join(srcBase, srcFile)
+	stat, err := os.Lstat(filepath)
+	if err != nil {
+		return err
+	}
+	if stat.IsDir() {
+		files, err := ioutil.ReadDir(filepath)
+		if err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			//case empty directory
+			hdr, _ := tar.FileInfoHeader(stat, filepath)
+			hdr.Name = destFile
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+		}
+		for _, f := range files {
+			if err := recursiveTar(srcBase, path.Join(srcFile, f.Name()), destBase, path.Join(destFile, f.Name()), tw); err != nil {
+				return err
+			}
+		}
+		return nil
+	} else if stat.Mode()&os.ModeSymlink != 0 {
+		//case soft link
+		hdr, _ := tar.FileInfoHeader(stat, filepath)
+		target, err := os.Readlink(filepath)
+		if err != nil {
+			return err
+		}
+
+		hdr.Linkname = target
+		hdr.Name = destFile
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+	} else {
+		//case regular file or other file type like pipe
+		hdr, err := tar.FileInfoHeader(stat, filepath)
+		if err != nil {
+			return err
+		}
+		hdr.Name = destFile
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		f, err := os.Open(filepath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		if _, err := io.Copy(tw, f); err != nil {
+			return err
+		}
+		return f.Close()
+	}
+	return nil
+}
 // #2 copyToPod
-func copyToPod(podName, namespace, srcPath, destPath string) (error) {
+func copyToPod(clientset *kubernetes.Clientset, restConfig *rest.Config, podName, namespace, srcPath, destPath string) (error) {
 	reader, writer := io.Pipe()
 	if destPath != "/" && strings.HasSuffix(string(destPath[len(destPath)-1]), "/") {
 		destPath = destPath[:len(destPath)-1]
@@ -146,7 +203,9 @@ func copyToPod(podName, namespace, srcPath, destPath string) (error) {
 	go func() {
 		defer writer.Close()
 		err := cpMakeTar(srcPath, destPath, writer)
-		cmdutil.CheckErr(err)
+		if err != nil{
+			panic(err.Error())
+		}
 	}()
 	var cmdArr []string
 
@@ -155,25 +214,10 @@ func copyToPod(podName, namespace, srcPath, destPath string) (error) {
 	if len(destDir) > 0 {
 		cmdArr = append(cmdArr, "-C", destDir)
 	}
-	return execToPodThroughAPI(cmdArr, "", podName, namespace, reader, os.Stdout, os.Stderr)
+	return execToPodThroughAPI(clientset, restConfig, cmdArr, "", podName, namespace, reader, os.Stdout, os.Stderr)
 }
-func main() {
-	//err := copyToPod("demo-job", "default", "./hello_src", "hello_dst")
-	//var cmdArr []string
-	//cmdArr = []string{"ls"}
-	//err := ExecToPodThroughAPI(cmdArr, "", "busybox-test", "default", os.Stdin, os.Stdout, os.Stderr)
-	//if err != nil{
-	//	panic(err.Error())
-	//}
-	//os.Create("testDir-findme")
-	//var stdout, stderr bytes.Buffer
-	//err := ExecToPodThroughAPI("ls", "", "busybox-test", "default", nil, &stdout, &stderr)
-	//if err != nil{
-	//	panic(err.Error())
-	//}
-	//fmt.Println(stderr.String())
-	//fmt.Println(stdout.String())
 
+func main() {
 	// create pod
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
@@ -192,35 +236,11 @@ func main() {
 		err = fmt.Errorf("failed creating clientset. Error: %+v", err)
 		panic(err)
 	}
-	//ID := "pv-claim"
-	//pvStorageName := "pv-demo"
-	//pvcClient := clientset.CoreV1().PersistentVolumeClaims("default")
-	//pvc := &corev1.PersistentVolumeClaim{
-	//	ObjectMeta: metav1.ObjectMeta{
-	//		Name:      ID,
-	//		Namespace: "default",
-	//	},
-	//	Spec: corev1.PersistentVolumeClaimSpec{
-	//		StorageClassName: &pvStorageName,
-	//		AccessModes: []corev1.PersistentVolumeAccessMode{
-	//			"ReadWriteOnce",  // FIXME readwriteonce ?
-	//		},
-	//		Resources: corev1.ResourceRequirements{
-	//			Requests: corev1.ResourceList{
-	//				"storage": *resource.NewMilliQuantity(10, resource.BinarySI),  // FIXME claim size
-	//			},
-	//		},
-	//	},
-	//}
-	//pvcResult, err := pvcClient.Create(context.TODO(), pvc, metav1.CreateOptions{})
-	//if err != nil{
-	//	panic(err.Error())
-	//}
-	//fmt.Println(pvcResult)
+
 	var cmds []string
-	cmds = []string{"sh", "-c", "echo 'Hello, Kubernetes!' && sleep 10"}
+	cmds = []string{"sh", "-c", "echo 'Hello, Kubernetes!'"}
 	podClient := clientset.CoreV1().Pods("default")
-	podName := "demo-job-135"
+	podName := "demo-job-146"
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: podName,
@@ -231,33 +251,9 @@ func main() {
 				{
 					Name:  "ece408",
 					Image: "nginx:1.12",
-					Ports: []corev1.ContainerPort{
-						{
-							Name:          "http",
-							Protocol:      corev1.ProtocolTCP,
-							ContainerPort: 80,
-						},
-					},
 					Command: cmds,
-					//VolumeMounts: []corev1.VolumeMount{
-					//	{
-					//		Name: "mysql-persistent-storage",
-					//		MountPath: "/src",
-					//	},
-					//},
 				},
-
 			},
-			//Volumes: []corev1.Volume{
-			//	{
-			//		Name: "mysql-persistent-storage",
-			//		VolumeSource: corev1.VolumeSource{
-			//			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-			//				ClaimName: "pv-claim",
-			//			},
-			//		},
-			//	},
-			//},
 		},
 	}
 	_, err = podClient.Create(context.TODO(), pod, metav1.CreateOptions{})
@@ -273,18 +269,36 @@ func main() {
 		if err != nil{
 			panic(err.Error())
 		}
-		//fmt.Println(pod.Status.Phase)
+		fmt.Println(pod.Status.Phase)
 	}
 	//fmt.Println(podResult)
 	//fmt.Println(podResult.Status)
 	//for true{
-		//pod, err = podClient.Get(context.TODO(), podName, metav1.GetOptions{})
-		//if err != nil{
-		//	panic(err.Error())
-		//}
-		//fmt.Println(podResult.Status)
+	//pod, err = podClient.Get(context.TODO(), podName, metav1.GetOptions{})
+	//if err != nil{
+	//	panic(err.Error())
+	//}
+	//fmt.Println(podResult.Status)
 	//}
 
+	err = copyToPod(clientset, config, podName, "default", "./hello_src", "hello_dst")
+	if err != nil{
+		panic(err.Error())
+	}
+	var cmdArr []string
+	cmdArr = []string{"ls"}
+	err = execToPodThroughAPI(clientset, config, cmdArr, "", podName, "default", os.Stdin, os.Stdout, os.Stderr)
+	if err != nil{
+		panic(err.Error())
+	}
+	//os.Create("testDir-findme")
+	//var stdout, stderr bytes.Buffer
+	//err := execToPodThroughAPI("ls", "", "busybox-test", "default", nil, &stdout, &stderr)
+	//if err != nil{
+	//	panic(err.Error())
+	//}
+	//fmt.Println(stderr.String())
+	//fmt.Println(stdout.String())
 
 	//var kubeconfig *string
 	//if home := homedir.HomeDir(); home != "" {
