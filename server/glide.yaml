@@ -1,0 +1,46 @@
+package: github.com/rai-project/server
+import:
+- package: github.com/BenLubar/memoize
+- package: github.com/Unknwon/com
+  version: ^1.0.0
+- package: github.com/aws/aws-sdk-go
+  version: ^1.10.35
+  subpackages:
+  - aws
+  - aws/session
+- package: github.com/fatih/color
+  version: ~1.7.0
+- package: github.com/k0kubun/pp
+  version: ~2.3.0
+- package: github.com/mattn/go-colorable
+  version: ~0.0.9
+- package: github.com/pkg/errors
+  version: ~0.8.0
+- package: github.com/rai-project/archive
+- package: github.com/rai-project/auth
+- package: github.com/rai-project/aws
+- package: github.com/rai-project/broker
+  subpackages:
+  - sqs
+- package: github.com/rai-project/config
+- package: github.com/rai-project/docker
+- package: github.com/rai-project/logger
+- package: github.com/rai-project/model
+- package: github.com/rai-project/nvidia-smi
+- package: github.com/rai-project/pubsub
+  subpackages:
+  - redis
+- package: github.com/rai-project/serializer
+  subpackages:
+  - json
+- package: github.com/rai-project/store
+  subpackages:
+  - s3
+- package: github.com/rai-project/utils
+- package: github.com/rai-project/uuid
+- package: github.com/rai-project/vipertags
+- package: github.com/sirupsen/logrus
+  version: ^1.0.0
+- package: github.com/stretchr/testify
+  subpackages:
+  - assert
