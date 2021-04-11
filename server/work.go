@@ -350,8 +350,7 @@ func (w *WorkRequest) run() error {
 	//	}
 	//	if buildSpec.Resources.GPU.Count < 0 {
 	//		w.publishStderr(color.RedString(
-	//			fmt.Sprintf("✱ The number of gpus should be a positive number, but got  %d.",
-	//				buildSpec.Resources.GPU.Count)))
+ 	//				buildSpec.Resources.GPU.Count)))
 	//		buildSpec.Resources.GPU.Count = 1
 	//	}
 	//	containerOpts = append(containerOpts, docker.Runtime("nvidia"), docker.GPUCount(buildSpec.Resources.GPU.Count))
@@ -444,7 +443,42 @@ func (w *WorkRequest) run() error {
 	//	log.WithError(err).WithField("dir", srcDir).Error("unable to upload user data to container")
 	//	return err
 	//}
-  //
+  defer func() {
+    fmt.Println("copying back")
+   opts := w.serverOptions
+   dir := opts.containerBuildDirectory[1:]
+   fmt.Println(dir)
+   r, err := copyFromPod(clientset, config, podName, "default", dir, "")
+   if err != nil {
+     w.publishStderr(color.RedString("✱ Unable to copy your output data in " + dir + " from the container."))
+     log.WithError(err).WithField("dir", dir).Error("unable to get user data from container")
+     return
+   }
+   	uploadKey := opts.clientUploadDestinationDirectory + "/build-" + w.ID.Hex() + "." + archive.Extension()
+   	key, err := w.store.UploadFrom(
+   		r,
+   		uploadKey,
+   		s3.Expiration(DefaultUploadExpiration()),
+   		s3.Metadata(map[string]interface{}{
+   			"id":           w.ID,
+   			"type":         "server_upload",
+   			"worker":       info(),
+   			"profile":      w.User,
+   			"submitted_at": w.CreatedAt,
+   			"created_at":   time.Now(),
+   		}),
+   		s3.ContentType(archive.MimeType()),
+   	)
+   	if err != nil {
+   		w.publishStderr(color.RedString("✱ Unable to upload your output data in " + dir + " to the store server."))
+   		log.WithError(err).WithField("dir", dir).WithField("key", uploadKey).Error("unable to upload user data to store")
+   		return
+   	}
+   	w.publishStdout(color.GreenString(
+   		"✱ The build folder has been uploaded to " + key +
+   			". The data will be present for only a short duration of time.",
+   	))
+  }()
 	//defer func() {
 	//	opts := w.serverOptions
 	//	dir := opts.containerBuildDirectory
@@ -480,8 +514,10 @@ func (w *WorkRequest) run() error {
 	//			". The data will be present for only a short duration of time.",
 	//	))
 	//}()
-  //
-	for _, cmd := range buildSpec.Commands.Build {
+
+  err = execToPodThroughAPI(clientset, config, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
+  for _, cmd := range buildSpec.Commands.Build {
+    w.publishStdout(color.GreenString("✱ Running " + cmd))
 		cmd = strings.TrimSpace(cmd)
 		if cmd == "" {
 			continue
@@ -496,7 +532,7 @@ func (w *WorkRequest) run() error {
       fmt.Println("error")
       panic(err.Error())
     }
-    err = execToPodThroughAPI(clientset, config, []string {"/bin/bash", "-c", "cd " + buildDir}, "", podName, "default", nil, w.stdout, w.stderr)
+    err = execToPodThroughAPI(clientset, config, []string {"/bin/bash", "-c", "cd " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
     if err != nil{
       fmt.Println("error")
       panic(err.Error())
@@ -517,7 +553,7 @@ func (w *WorkRequest) run() error {
 		//exec.Stdout = w.stdout
 		//exec.Dir = buildDir
     //
-		w.publishStdout(color.GreenString("✱ Running " + cmd))
+		w.publishStdout(color.GreenString("✱ Finished " + cmd))
     //
 		//if err := exec.Run(); err != nil {
 		//	w.publishStderr(color.RedString("✱ Unable to start running " + cmd + ". Make sure that the input is a valid shell command."))
@@ -690,10 +726,27 @@ func copyToPod(clientset *kubernetes.Clientset, restConfig *rest.Config, podName
   }()
   var cmdArr []string
 
-  cmdArr = []string{"tar", "-xf", "-"}
+  cmdArr = []string{"tar", "-xf", "-"}  // extract from Pipe
   destDir := path.Dir(destPath)
+  println(destDir)
   if len(destDir) > 0 {
     cmdArr = append(cmdArr, "-C", destDir)
   }
   return execToPodThroughAPI(clientset, restConfig, cmdArr, "", podName, namespace, reader, os.Stdout, os.Stderr)
+}
+
+func copyFromPod(clientset *kubernetes.Clientset, restConfig *rest.Config, podName, namespace, srcPath, destPath string) (io.Reader, error) {
+  if srcPath != "/" && strings.HasSuffix(string(srcPath[len(srcPath)-1]), "/") {
+    srcPath = srcPath[:len(srcPath)-1]
+  }
+  reader, writer := io.Pipe()  // tar result avail at reader
+  cmdArr := []string{"tar", "-cf", "-", srcPath}  // create from Pipe
+  go func(){
+    defer writer.Close()
+    err := execToPodThroughAPI(clientset, restConfig, cmdArr, "", podName, namespace, nil, writer, os.Stderr)
+    if err != nil{
+      panic(err.Error())
+    }
+  }()
+  return reader, nil
 }
