@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"errors"
-	"io"
-	"runtime"
+  "flag"
+  "fmt"
+  "io"
+  "path/filepath"
+  "runtime"
 
 	"github.com/aws/aws-sdk-go/aws/session"
 	colorable "github.com/mattn/go-colorable"
@@ -20,6 +23,10 @@ import (
 	"github.com/rai-project/serializer"
 	"github.com/rai-project/serializer/json"
 	"github.com/rai-project/uuid"
+
+  "k8s.io/client-go/kubernetes"
+  "k8s.io/client-go/tools/clientcmd"
+  "k8s.io/client-go/util/homedir"
 )
 
 type Server struct {
@@ -60,7 +67,22 @@ func New(opts ...Option) (*Server, error) {
 		stdout = colorable.NewNonColorable(stdout)
 		stderr = colorable.NewNonColorable(stderr)
 	}
-
+  var kubeconfig *string
+  if home := homedir.HomeDir(); home != "" {
+    kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+  } else {
+    kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+  }
+  //flag.Parse()
+  restConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+  if err != nil {
+    panic(err)
+  }
+  clientset, err := kubernetes.NewForConfig(restConfig)
+  if err != nil {
+    err = fmt.Errorf("failed creating clientset. Error: %+v", err)
+    panic(err)
+  }
 	options := Options{
 		stdout:                           nopWriterCloser{stdout},
 		stderr:                           nopWriterCloser{stderr},
@@ -73,6 +95,8 @@ func New(opts ...Option) (*Server, error) {
 		clientAppName:                    Config.ClientAppName,
 		context:                          context.Background(),
 		timelimit:                        Config.ClientJobTimeLimit,
+		k8sRestConfig:                    restConfig,
+		k8sClientset:                     clientset,
 	}
 
 	for _, o := range opts {

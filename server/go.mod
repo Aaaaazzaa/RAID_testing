@@ -111,5 +111,3 @@ require (
 	k8s.io/apimachinery v0.0.0-20190313115320-c9defaaddf6f
 	upper.io/db.v3 v3.8.0+incompatible // indirect
 )
-
-replace github.com/docker/spdystream => github.com/moby/spdystream v0.2.0

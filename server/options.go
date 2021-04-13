@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"time"
+  "k8s.io/client-go/kubernetes"
+  "k8s.io/client-go/rest"
 )
 
 type Options struct {
@@ -21,6 +23,9 @@ type Options struct {
 	timelimit                        time.Duration
 	onClose                          []func()
 	onWorkerClose                    []func()
+
+  k8sClientset  *kubernetes.Clientset
+  k8sRestConfig *rest.Config
 }
 
 type Option func(*Options)

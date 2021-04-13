@@ -29,16 +29,13 @@ import (
   "github.com/rai-project/uuid"
 
   "archive/tar"
-  "flag"
   shellwords "github.com/junegunn/go-shellwords"
   corev1 "k8s.io/api/core/v1"
   metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
   "k8s.io/apimachinery/pkg/runtime"
   "k8s.io/client-go/kubernetes"
   "k8s.io/client-go/rest"
-  "k8s.io/client-go/tools/clientcmd"
   "k8s.io/client-go/tools/remotecommand"
-  "k8s.io/client-go/util/homedir"
 )
 
 type WorkRequest struct {
@@ -372,27 +369,10 @@ func (w *WorkRequest) run() error {
 	//}
 
   // create w.pod and start it
-  var kubeconfig *string
-  if home := homedir.HomeDir(); home != "" {
-    kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-  } else {
-    kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-  }
-  //flag.Parse()
-
-  config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-  if err != nil {
-    panic(err)
-  }
-  clientset, err := kubernetes.NewForConfig(config)
-  if err != nil {
-    err = fmt.Errorf("failed creating clientset. Error: %+v", err)
-    panic(err)
-  }
 
   var cmds []string
   cmds = []string{"sh", "-c", "sleep infinity"}
-  podClient := clientset.CoreV1().Pods("default")
+  podClient := w.serverOptions.k8sClientset.CoreV1().Pods("default")
   podName := w.ID.Hex()
   pod := &corev1.Pod{
     ObjectMeta: metav1.ObjectMeta{
@@ -409,7 +389,7 @@ func (w *WorkRequest) run() error {
       },
     },
   }
-  _, err = podClient.Create(context.TODO(), pod, metav1.CreateOptions{})
+  _, err := podClient.Create(context.TODO(), pod, metav1.CreateOptions{})
   if err != nil{
     panic(err.Error())
   }
@@ -434,7 +414,7 @@ func (w *WorkRequest) run() error {
     w.publishStderr(color.RedString("✱ Unable to unzip your folder " + err.Error() + "."))
     return err
   }
-  err = copyToPod(clientset, config, podName, "default", tmpDir, srcDir)
+  err = copyToPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "default", tmpDir, srcDir)
   if err != nil{
     panic(err.Error())
   }
@@ -448,7 +428,7 @@ func (w *WorkRequest) run() error {
    opts := w.serverOptions
    dir := opts.containerBuildDirectory[1:]
    fmt.Println(dir)
-   r, err := copyFromPod(clientset, config, podName, "default", dir, "")
+   r, err := copyFromPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "default", dir, "")
    if err != nil {
      w.publishStderr(color.RedString("✱ Unable to copy your output data in " + dir + " from the container."))
      log.WithError(err).WithField("dir", dir).Error("unable to get user data from container")
@@ -515,7 +495,7 @@ func (w *WorkRequest) run() error {
 	//	))
 	//}()
 
-  err = execToPodThroughAPI(clientset, config, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
+  err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
   for _, cmd := range buildSpec.Commands.Build {
     w.publishStdout(color.GreenString("✱ Running " + cmd))
 		cmd = strings.TrimSpace(cmd)
@@ -532,12 +512,12 @@ func (w *WorkRequest) run() error {
       fmt.Println("error")
       panic(err.Error())
     }
-    err = execToPodThroughAPI(clientset, config, []string {"/bin/bash", "-c", "cd " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
+    err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "cd " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
     if err != nil{
       fmt.Println("error")
       panic(err.Error())
     }
-		err = execToPodThroughAPI(clientset, config, args, "", podName, "default", nil, os.Stdout, os.Stderr)
+		err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, args, "", podName, "default", nil, os.Stdout, os.Stderr)
 		if err != nil{
       fmt.Println("error")
       panic(err.Error())
