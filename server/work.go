@@ -5,6 +5,7 @@ import (
   "fmt"
   "io"
   "io/ioutil"
+  "k8s.io/apimachinery/pkg/api/resource"
   "os"
   "path"
   "path/filepath"
@@ -371,13 +372,13 @@ func (w *WorkRequest) run() error {
   // create w.pod and start it
 
   var cmds []string
-  cmds = []string{"sh", "-c", "sleep infinity"}
-  podClient := w.serverOptions.k8sClientset.CoreV1().Pods("default")
+  cmds = []string{"sh", "-c", "mkdir " + buildDir + "; sleep infinity"}
+  podClient := w.serverOptions.k8sClientset.CoreV1().Pods("task-build")
   podName := w.ID.Hex()
   pod := &corev1.Pod{
     ObjectMeta: metav1.ObjectMeta{
       Name: podName,
-      Namespace: "default",
+      Namespace: "task-build",
     },
     Spec: corev1.PodSpec{
       Containers: []corev1.Container{
@@ -385,22 +386,36 @@ func (w *WorkRequest) run() error {
           Name:  "ece408",
           Image: imageName,
           Command: cmds,
+          WorkingDir: buildDir,
+          VolumeMounts: []corev1.VolumeMount{
+            {
+              Name: "build-dir",
+              MountPath: "/build",
+            },
+          },
+          Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1"),}},
         },
+      },
+      Volumes: []corev1.Volume{
+        {        Name: "build-dir",
+          VolumeSource: corev1.VolumeSource{
+            EmptyDir:              nil,
+          }},
       },
     },
   }
   _, err := podClient.Create(context.TODO(), pod, metav1.CreateOptions{})
   if err != nil{
-    panic(err.Error())
+    log.Fatal(err)
   }
   pod, err = podClient.Get(context.TODO(), podName, metav1.GetOptions{})
   if err != nil{
-    panic(err.Error())
+    log.Fatal(err)
   }
   for pod.Status.Phase != "Running"{
     pod, err = podClient.Get(context.TODO(), podName, metav1.GetOptions{})
     if err != nil{
-      panic(err.Error())
+      log.Fatal(err)
     }
     fmt.Println(pod.Status.Phase)
   }
@@ -414,9 +429,9 @@ func (w *WorkRequest) run() error {
     w.publishStderr(color.RedString("✱ Unable to unzip your folder " + err.Error() + "."))
     return err
   }
-  err = copyToPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "default", tmpDir, srcDir)
+  err = copyToPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "task-build", tmpDir, srcDir)
   if err != nil{
-    panic(err.Error())
+    log.Fatal(err)
   }
   //if err := container.CopyToContainer(srcDir, bytes.NewBuffer(buf.Bytes())); err != nil {
 	//	w.publishStderr(color.RedString("✱ Unable to copy your data to the container directory " + srcDir + " ."))
@@ -426,9 +441,9 @@ func (w *WorkRequest) run() error {
   defer func() {
     fmt.Println("copying back")
    opts := w.serverOptions
-   dir := opts.containerBuildDirectory[1:]
+   dir := opts.containerBuildDirectory
    fmt.Println(dir)
-   r, err := copyFromPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "default", dir, "")
+   r, err := copyFromPod(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, podName, "task-build", dir, "")
    if err != nil {
      w.publishStderr(color.RedString("✱ Unable to copy your output data in " + dir + " from the container."))
      log.WithError(err).WithField("dir", dir).Error("unable to get user data from container")
@@ -458,6 +473,10 @@ func (w *WorkRequest) run() error {
    		"✱ The build folder has been uploaded to " + key +
    			". The data will be present for only a short duration of time.",
    	))
+    err = podClient.Delete(context.TODO(), podName, metav1.DeleteOptions{})
+    if err != nil{
+      log.Fatal(err)
+    }
   }()
 	//defer func() {
 	//	opts := w.serverOptions
@@ -495,7 +514,7 @@ func (w *WorkRequest) run() error {
 	//	))
 	//}()
 
-  err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
+  //err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "task-build", nil, os.Stdout, os.Stdout)
   for _, cmd := range buildSpec.Commands.Build {
     w.publishStdout(color.GreenString("✱ Running " + cmd))
 		cmd = strings.TrimSpace(cmd)
@@ -512,12 +531,12 @@ func (w *WorkRequest) run() error {
       fmt.Println("error")
       panic(err.Error())
     }
-    err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "cd " + buildDir}, "", podName, "default", nil, os.Stdout, os.Stdout)
-    if err != nil{
-      fmt.Println("error")
-      panic(err.Error())
-    }
-		err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, args, "", podName, "default", nil, os.Stdout, os.Stderr)
+    //err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"sh", "-c", "cd " + buildDir + "&& /bin/bash"}, "", podName, "task-build", nil, os.Stdout, os.Stdout)
+    //if err != nil{
+    //  fmt.Println("error")
+    //  panic(err.Error())
+    //}
+		err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, args, "", podName, "task-build", nil, os.Stdout, os.Stderr)
 		if err != nil{
       fmt.Println("error")
       panic(err.Error())
@@ -532,7 +551,7 @@ func (w *WorkRequest) run() error {
 		//exec.Stderr = w.stderr
 		//exec.Stdout = w.stdout
 		//exec.Dir = buildDir
-    //
+
 		w.publishStdout(color.GreenString("✱ Finished " + cmd))
     //
 		//if err := exec.Run(); err != nil {
