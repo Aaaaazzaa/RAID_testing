@@ -326,53 +326,10 @@ func (w *WorkRequest) run() error {
 	srcDir := w.serverOptions.containerSourceDirectory
 	buildDir := w.serverOptions.containerBuildDirectory
 
-	//containerOpts := []docker.ContainerOption{
-	//	docker.Image(imageName),
-	//	docker.AddEnv("IMAGE_NAME", imageName),
-	//	docker.AddVolume(srcDir),
-	//	docker.AddVolume(buildDir),
-	//	docker.WorkingDirectory(buildDir),
-	//	docker.Shell([]string{"/bin/bash"}),
-	//	docker.Entrypoint([]string{}),
-	//	docker.NetworkDisabled(true),
-	//}
-	//if buildSpec.Resources.Limits.Network {
-	//	containerOpts = append(containerOpts, docker.NetworkDisabled(!buildSpec.Resources.Limits.Network))
-	//}
-	//if buildSpec.Resources.GPU != nil {
-	//	if buildSpec.Resources.GPU.Count > len(nvidiasmi.Info.GPUS) {
-	//		w.publishStderr(color.RedString(
-	//			fmt.Sprintf("✱ The maximum number of gpus available on the machine is %d. You're launch will utilitize those gpus.",
-	//				len(nvidiasmi.Info.GPUS))))
-	//		buildSpec.Resources.GPU.Count = len(nvidiasmi.Info.GPUS)
-	//	}
-	//	if buildSpec.Resources.GPU.Count < 0 {
-	//		w.publishStderr(color.RedString(
- 	//				buildSpec.Resources.GPU.Count)))
-	//		buildSpec.Resources.GPU.Count = 1
-	//	}
-	//	containerOpts = append(containerOpts, docker.Runtime("nvidia"), docker.GPUCount(buildSpec.Resources.GPU.Count))
-	//}
-	//container, err := docker.NewContainer(w.docker, containerOpts...)
-	//if err != nil {
-	//	w.publishStderr(color.RedString("✱ Unable to create " + imageName + " container."))
-	//	log.WithError(err).WithField("image", imageName).Error("unable to create container")
-	//	return err
-	//}
-	//w.container = container
-
-	//w.publishStdout(color.YellowString("✱ Starting container."))
-  //
-	//if err := container.Start(); err != nil {
-	//	w.publishStderr(color.RedString("✱ Unable to start " + imageName + " container."))
-	//	log.WithError(err).WithField("image", imageName).Error("unable to start container")
-	//	return err
-	//}
-
   // create w.pod and start it
 
   var cmds []string
-  cmds = []string{"sh", "-c", "mkdir " + buildDir + "; sleep infinity"}
+  cmds = []string{"sh", "-c", "sleep infinity"}
   podClient := w.serverOptions.k8sClientset.CoreV1().Pods("task-build")
   podName := w.ID.Hex()
   pod := &corev1.Pod{
@@ -433,11 +390,7 @@ func (w *WorkRequest) run() error {
   if err != nil{
     log.Fatal(err)
   }
-  //if err := container.CopyToContainer(srcDir, bytes.NewBuffer(buf.Bytes())); err != nil {
-	//	w.publishStderr(color.RedString("✱ Unable to copy your data to the container directory " + srcDir + " ."))
-	//	log.WithError(err).WithField("dir", srcDir).Error("unable to upload user data to container")
-	//	return err
-	//}
+
   defer func() {
     fmt.Println("copying back")
    opts := w.serverOptions
@@ -478,90 +431,24 @@ func (w *WorkRequest) run() error {
       log.Fatal(err)
     }
   }()
-	//defer func() {
-	//	opts := w.serverOptions
-	//	dir := opts.containerBuildDirectory
-	//	r, err := container.CopyFromContainer(dir)
-	//	if err != nil {
-	//		w.publishStderr(color.RedString("✱ Unable to copy your output data in " + dir + " from the container."))
-	//		log.WithError(err).WithField("dir", dir).Error("unable to get user data from container")
-	//		return
-	//	}
-  //
-	//	uploadKey := opts.clientUploadDestinationDirectory + "/build-" + w.ID.Hex() + "." + archive.Extension()
-	//	key, err := w.store.UploadFrom(
-	//		r,
-	//		uploadKey,
-	//		s3.Expiration(DefaultUploadExpiration()),
-	//		s3.Metadata(map[string]interface{}{
-	//			"id":           w.ID,
-	//			"type":         "server_upload",
-	//			"worker":       info(),
-	//			"profile":      w.User,
-	//			"submitted_at": w.CreatedAt,
-	//			"created_at":   time.Now(),
-	//		}),
-	//		s3.ContentType(archive.MimeType()),
-	//	)
-	//	if err != nil {
-	//		w.publishStderr(color.RedString("✱ Unable to upload your output data in " + dir + " to the store server."))
-	//		log.WithError(err).WithField("dir", dir).WithField("key", uploadKey).Error("unable to upload user data to store")
-	//		return
-	//	}
-	//	w.publishStdout(color.GreenString(
-	//		"✱ The build folder has been uploaded to " + key +
-	//			". The data will be present for only a short duration of time.",
-	//	))
-	//}()
-
-  //err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"/bin/bash", "-c", "mkdir " + buildDir}, "", podName, "task-build", nil, os.Stdout, os.Stdout)
-  for _, cmd := range buildSpec.Commands.Build {
+	for _, cmd := range buildSpec.Commands.Build {
     w.publishStdout(color.GreenString("✱ Running " + cmd))
 		cmd = strings.TrimSpace(cmd)
 		if cmd == "" {
 			continue
 		}
-		/*
-			if !strings.HasPrefix(cmd, "/bin/sh") && !strings.HasPrefix(cmd, "/bin/sh") {
-				cmd = "/bin/sh -c " + cmd
-			}
-		*/
 		args, err := shellwords.Parse(cmd)
     if err != nil{
       fmt.Println("error")
       panic(err.Error())
     }
-    //err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, []string {"sh", "-c", "cd " + buildDir + "&& /bin/bash"}, "", podName, "task-build", nil, os.Stdout, os.Stdout)
-    //if err != nil{
-    //  fmt.Println("error")
-    //  panic(err.Error())
-    //}
 		err = execToPodThroughAPI(w.serverOptions.k8sClientset, w.serverOptions.k8sRestConfig, args, "", podName, "task-build", nil, os.Stdout, os.Stderr)
 		if err != nil{
       fmt.Println("error")
       panic(err.Error())
     }
-		//exec, err := docker.NewExecutionFromString(container, cmd)
-		//if err != nil {
-		//	w.publishStderr(color.RedString("✱ Unable create run command " + cmd + ". Make sure that the input is a valid shell command."))
-		//	log.WithError(err).WithField("cmd", cmd).Error("unable to create docker execution")
-		//	return err
-		//}
-		//exec.Stdin = nil
-		//exec.Stderr = w.stderr
-		//exec.Stdout = w.stdout
-		//exec.Dir = buildDir
-
 		w.publishStdout(color.GreenString("✱ Finished " + cmd))
-    //
-		//if err := exec.Run(); err != nil {
-		//	w.publishStderr(color.RedString("✱ Unable to start running " + cmd + ". Make sure that the input is a valid shell command."))
-		//	log.WithError(err).WithField("cmd", cmd).Error("unable to create docker execution")
-		//	return err
-		//}
 	}
-	//log.WithField("id", w.ID).WithField("image", imageName).Debug("finished ")
-
 	return nil
 }
 
